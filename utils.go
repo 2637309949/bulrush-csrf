@@ -2,46 +2,31 @@
 // Use of this source code is governed by a MIT style
 // license that can be found in the LICENSE file.
 
-package limit
+package csrf
 
 import (
-	"net/http"
-	"regexp"
-	"strings"
+	"crypto/sha1"
+	"fmt"
 
+	"github.com/2637309949/bulrush-utils/funcs"
 	"github.com/gin-gonic/gin"
-	"github.com/thoas/go-funk"
 )
 
-// DefaultFailureHandler default error handler
-var DefaultFailureHandler ErrorHandler = func(ctx *gin.Context) {
-	rushLogger.Error("rate limited access, pease check again later")
-	ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"message": "rate limited access, pease check again later"})
+func hasha(s string) string {
+	h := sha1.New()
+	h.Write([]byte(s))
+	bs := h.Sum(nil)
+	return fmt.Sprintf("%x", bs)
 }
 
-func matchRule(rules []Rule, params struct {
-	path   string
-	method string
-}) (bool, Rule) {
-	rule := funk.Find(rules, func(rule Rule) bool {
-		r, _ := regexp.Compile(rule.Match)
-		ruleMatch := r.MatchString(params.path)
-		methodMatch := false
-		if rule.Match == "" {
-			ruleMatch = true
-		}
-		if m := funk.Find(rule.Methods, func(method string) bool {
-			return strings.ToUpper(params.method) == strings.ToUpper(method)
-		}); m != nil {
-			methodMatch = true
-		}
-		if len(rule.Methods) == 0 {
-			methodMatch = true
-		}
-		return methodMatch && ruleMatch
-	})
-	if rule == nil {
-		return false, Rule{}
-	}
-	return true, rule.(Rule)
+func _csrf(c *gin.Context) string {
+	return funcs.Until(
+		c.PostForm("_csrf"),
+		c.Query("_csrf"),
+		c.Request.Header.Get("x-xsrf-token"),
+		func() interface{} {
+			value, _ := c.Cookie("x-xsrf-token")
+			return value
+		},
+	).(string)
 }

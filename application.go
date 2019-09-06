@@ -2,85 +2,72 @@
 // Use of this source code is governed by a MIT style
 // license that can be found in the LICENSE file.
 
-package limit
+package csrf
 
 import (
-	"regexp"
-
-	utils "github.com/2637309949/bulrush-utils"
+	"fmt"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/thoas/go-funk"
 )
 
 type (
-	// Rule defined
-	Rule struct {
-		Methods []string
-		Match   string
-		Rate    int
-	}
-	// Model token store
-	Model interface {
-		Save(string, string, string, int)
-		Find(string, string, string, int) interface{}
-	}
-	// ErrorHandler handler error
-	ErrorHandler func(ctx *gin.Context)
-	// Frequency limit
-	Frequency struct {
-		Passages       []string
-		Rules          []Rule
-		Model          Model
-		FailureHandler ErrorHandler
-	}
-	// Limit plugin
-	Limit struct {
-		Frequency *Frequency
+	// CSRF defined
+	CSRF struct {
+		Secret string
+		Cookie string
 	}
 )
 
-// New defined new limit
-func New() *Limit {
-	return &Limit{}
-}
-
-// AddOptions defined add option
-func (l *Limit) AddOptions(opts ...Option) *Limit {
-	for _, v := range opts {
-		v.apply(l)
-	}
-	return l
+var ignore = map[string]bool{
+	"HEAD":    true,
+	"OPTIONS": true,
 }
 
 // Plugin for Limit
-func (l *Limit) Plugin(router *gin.RouterGroup) {
+func (l *CSRF) Plugin(router *gin.RouterGroup) {
 	router.Use(func(ctx *gin.Context) {
-		path := ctx.Request.URL.RequestURI()
-		ip := ctx.ClientIP()
-		method := ctx.Request.Method
-		if pass := funk.Find(l.Frequency.Passages, func(regex string) bool {
-			r, _ := regexp.Compile(regex)
-			return r.MatchString(path)
-		}); pass != nil {
+		if _, ok := ignore[ctx.Request.Method]; ok {
 			ctx.Next()
 			return
 		}
-		if ruleMatch, rule := matchRule(
-			l.Frequency.Rules,
-			struct {
-				path   string
-				method string
-			}{
-				path:   path,
-				method: method,
-			}); ruleMatch {
-			if item := l.Frequency.Model.Find(ip, path, method, rule.Rate); item != nil {
-				(utils.Some(l.Frequency.FailureHandler, DefaultFailureHandler).(ErrorHandler))(ctx)
-				return
-			}
-			l.Frequency.Model.Save(ip, path, method, rule.Rate)
+		if ctx.Request.Method == "GET" {
+			l.create(ctx)
+		} else {
+			l.verify(ctx)
 		}
-		ctx.Next()
 	})
+}
+
+func (l *CSRF) create(ctx *gin.Context) {
+	token, err := ctx.Cookie(l.Cookie)
+	if err != nil {
+		ctx.Next()
+		return
+	}
+	ctx.Set("csrf", hasha(fmt.Sprintf("%s.%s", token, l.Secret)))
+	ctx.Next()
+}
+
+func (l *CSRF) verify(ctx *gin.Context) {
+	token, err := ctx.Cookie(l.Cookie)
+	if err != nil {
+		ctx.String(http.StatusForbidden, "failed csrf check, no cookie value found")
+		return
+	}
+
+	// get the CSRF token
+	csrf := _csrf(ctx)
+	if csrf == "" {
+		ctx.String(http.StatusForbidden, "failed csrf check, no cookie value found")
+	}
+
+	hash := hasha(fmt.Sprintf("%s.%s", token, l.Secret))
+
+	// verify CSRF token passed in matches the hash
+	if hash == csrf {
+		ctx.Next()
+	} else {
+		ctx.String(http.StatusForbidden, "invalid csrf token")
+	}
 }
